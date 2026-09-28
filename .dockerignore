@@ -1,0 +1,6 @@
+.git
+.github
+src/.git
+persist
+.env
+*.log

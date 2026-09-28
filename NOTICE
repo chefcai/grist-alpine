@@ -1,0 +1,6 @@
+grist-alpine
+Container build recipe for Grist (https://github.com/gristlabs/grist-core).
+
+Grist is Copyright Grist Labs, Inc. and licensed under the Apache License 2.0.
+The Dockerfile in this repository is adapted from the upstream grist-core
+Dockerfile. No Grist source code is vendored in this repository.

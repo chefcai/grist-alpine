@@ -1,0 +1,174 @@
+name: Build and Push grist-alpine Image
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      grist_ref:
+        description: "grist-core tag to build (blank = latest release)"
+        required: false
+        default: ""
+  schedule:
+    # Daily check for a new upstream grist-core release. Skips automatically
+    # if that release is already published (see "Check if image already exists").
+    - cron: '30 8 * * *'
+    # Weekly forced rebuild so Alpine security fixes land even when Grist
+    # itself has not cut a new release.
+    - cron: '0 9 * * 0'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  FORCE_REFRESH_CRON: '0 9 * * 0'
+
+# Serialize runs per ref so a slow older run cannot overwrite :latest.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Resolve grist-core version
+        id: grist_version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_REF: ${{ github.event.inputs.grist_ref }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            VERSION="$INPUT_REF"
+          else
+            VERSION=$(gh api repos/gristlabs/grist-core/releases/latest -q .tag_name)
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not resolve grist-core release tag"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "grist-core version: $VERSION"
+
+      - name: Check if image already exists for this version
+        id: check
+        run: |
+          TAG="${{ steps.grist_version.outputs.tag }}"
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ github.event.schedule }}" = "${{ env.FORCE_REFRESH_CRON }}" ]; then
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Weekly forced refresh, rebuilding $TAG."
+            exit 0
+          fi
+          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${{ github.repository }}:pull" | jq -r .token)
+          HTTP=$(curl -sSL -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.index.v1+json" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/${{ github.repository }}/manifests/$TAG")
+          if [ "$HTTP" = "200" ]; then
+            echo "needs_build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Version $TAG already published, skipping build."
+          else
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Version $TAG not yet published (HTTP $HTTP), will build."
+          fi
+
+      - name: Checkout grist-core source
+        if: steps.check.outputs.needs_build == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: gristlabs/grist-core
+          ref: ${{ steps.grist_version.outputs.version }}
+          path: src
+          persist-credentials: false
+
+      - name: Record upstream commit
+        if: steps.check.outputs.needs_build == 'true'
+        id: upstream
+        run: echo "commit=$(git -C src rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        if: steps.check.outputs.needs_build == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        if: steps.check.outputs.needs_build == 'true'
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Only the default branch publishes :latest and :<version>.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.grist_version.outputs.tag }},enable={{is_default_branch}}
+            type=ref,event=branch,prefix=branch-,enable=${{ github.ref_name != 'main' }}
+          labels: |
+            org.opencontainers.image.title=grist-alpine
+            org.opencontainers.image.description=Alpine-based build of Grist (grist-core ${{ steps.grist_version.outputs.version }})
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.version=${{ steps.grist_version.outputs.tag }}
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.needs_build == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      # Build once and load locally so the smoke test runs before anything is pushed.
+      - name: Build image
+        if: steps.check.outputs.needs_build == 'true'
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          build-args: |
+            GRIST_BUILD_COMMIT=${{ steps.upstream.outputs.commit }}
+          tags: grist-alpine:smoke
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test image
+        if: steps.check.outputs.needs_build == 'true'
+        run: ./tests/smoke.sh grist-alpine:smoke
+
+      - name: Push image
+        if: steps.check.outputs.needs_build == 'true' && github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            GRIST_BUILD_COMMIT=${{ steps.upstream.outputs.commit }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      - name: Report image size
+        if: steps.check.outputs.needs_build == 'true'
+        continue-on-error: true
+        run: |
+          BYTES=$(docker image inspect grist-alpine:smoke --format '{{.Size}}')
+          MB=$(awk "BEGIN {printf \"%.0f\", $BYTES/1000/1000}")
+          echo "::notice::grist-alpine ${{ steps.grist_version.outputs.tag }} uncompressed size = ${MB} MB"

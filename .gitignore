@@ -1,0 +1,5 @@
+.env
+persist/
+src/
+*.log
+.DS_Store

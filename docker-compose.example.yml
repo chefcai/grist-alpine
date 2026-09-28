@@ -1,0 +1,24 @@
+services:
+  grist:
+    image: ${GRIST_IMAGE:-ghcr.io/chefcai/grist-alpine:latest}
+    container_name: ${GRIST_CONTAINER_NAME:-grist}
+    restart: unless-stopped
+    ports:
+      - "${GRIST_BIND_ADDR:-127.0.0.1}:${GRIST_PORT:-8484}:8484"
+    environment:
+      APP_HOME_URL: ${APP_HOME_URL:-http://localhost:8484}
+      GRIST_SINGLE_ORG: ${GRIST_SINGLE_ORG:-docs}
+      GRIST_DEFAULT_EMAIL: ${GRIST_DEFAULT_EMAIL:-admin@example.com}
+      GRIST_SESSION_SECRET: ${GRIST_SESSION_SECRET:?set GRIST_SESSION_SECRET in .env}
+      GRIST_SANDBOX_FLAVOR: ${GRIST_SANDBOX_FLAVOR:-gvisor}
+      GRIST_TELEMETRY_LEVEL: ${GRIST_TELEMETRY_LEVEL:-off}
+    volumes:
+      # Keep on local disk (SQLite). Back it up to network storage separately.
+      - ${GRIST_DATA_DIR:-./persist}:/persist
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8484/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: ${GRIST_MEM_LIMIT:-768m}
