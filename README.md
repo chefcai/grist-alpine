@@ -8,14 +8,18 @@ The image is built from an unmodified upstream `grist-core` release tag by GitHu
 
 | | Upstream (`grist-oss`) | `grist-alpine` |
 |---|---|---|
-| Base | Debian (trixie-slim) | Alpine |
+| Base | Debian (trixie-slim) | Alpine 3.22 |
+| Node.js 22 | Official Node image (with npm, yarn, corepack, headers) | Alpine's `nodejs` package only |
 | Python (formula engine) | 3.11 | 3.11 (musl build) |
 | Formula sandbox | gVisor (default), Pyodide (optional) | gVisor only |
 | Built web assets | Copied twice (duplicate layer) | Copied once |
 | Python stdlib extras (tests, tkinter, idle, pip) | Included | Removed |
 | Browser-only npm packages in runtime `node_modules` | Included | Removed (already bundled into `static/`) |
+| Source maps and TypeScript declaration files | Included | Removed |
 
 It uses the same Grist community edition code, the same environment variables and the same `/persist` data layout as upstream. Existing volumes work unchanged, and the container user is still `grist` (uid/gid 1001).
+
+Alpine 3.22 is used because it is the newest Alpine release whose `nodejs` package is Node 22, the version grist-core targets. The base will move forward when grist-core moves to a newer Node LTS.
 
 **Not included:** the optional Pyodide sandbox. If you set `GRIST_SANDBOX_FLAVOR=pyodide`, use the upstream image instead.
 

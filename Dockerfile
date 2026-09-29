@@ -14,17 +14,21 @@
 ##   - Unused parts of the Python stdlib removed (test suite, tkinter, idle, pip).
 ##   - Browser-only npm packages (already bundled into static/ by webpack) are
 ##     removed from the runtime node_modules; see tools/find-client-only-deps.js.
+##   - Node comes from Alpine's own nodejs package (no npm/yarn/corepack/headers
+##     in the runtime image), and source maps / type declarations are stripped.
 ################################################################################
 
-ARG ALPINE_VERSION=3.24
-ARG NODE_VERSION=22
+# Alpine 3.22 is the newest release whose "nodejs" package is Node 22 LTS, the
+# version grist-core targets (.nvmrc). Every stage uses the same Alpine release
+# so the copied CPython build and the compiled sqlite3 addon match the runtime.
+ARG ALPINE_VERSION=3.22
 ARG PYTHON_VERSION=3.11
 
 ################################################################################
 ## Shared Node base with native build tooling (for the sqlite3 addon)
 ################################################################################
-FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS node-base
-RUN apk add --no-cache bash git python3 make g++
+FROM alpine:${ALPINE_VERSION} AS node-base
+RUN apk add --no-cache nodejs nodejs-dev yarn bash git python3 make g++
 WORKDIR /grist
 # Community edition only: never download extensions during install.
 ENV GRIST_SKIP_EXT_AUTOSETUP=1
@@ -59,7 +63,8 @@ ARG GRIST_BUILD_CHANNEL=
 ARG GRIST_BUILD_COMMIT=
 RUN GRIST_BUILD_CHANNEL=${GRIST_BUILD_CHANNEL} GRIST_BUILD_COMMIT=${GRIST_BUILD_COMMIT} \
     WEBPACK_EXTRA_MODULE_PATHS=/node_modules yarn run build:prod \
- && rm -rf /grist/static/locales
+ && rm -rf /grist/static/locales \
+ && find /grist/static /grist/_build -type f -name '*.map' -delete
 
 ################################################################################
 ## Prune browser-only packages from the production node_modules
@@ -73,7 +78,9 @@ COPY --from=builder /grist/static /grist/static
 COPY tools/find-client-only-deps.js /tmp/find-client-only-deps.js
 RUN node /tmp/find-client-only-deps.js /grist \
  && node /tmp/find-client-only-deps.js /grist --names > /tmp/prune-list \
- && cd /grist/node_modules && xargs -r rm -rf < /tmp/prune-list
+ && cd /grist/node_modules && xargs -r rm -rf < /tmp/prune-list \
+ && find /grist/node_modules -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' \) \
+      -not -path '/grist/node_modules/typescript/*' -delete
 
 ################################################################################
 ## Python for the formula engine (same minor version as upstream, musl build)
@@ -94,14 +101,14 @@ FROM docker.io/gristlabs/gvisor-unprivileged:buster AS sandbox
 ################################################################################
 ## Runtime
 ################################################################################
-FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION}
+FROM alpine:${ALPINE_VERSION}
 
 ARG GRIST_ALLOW_AUTOMATIC_VERSION_CHECKING=false
 
-# bash/setpriv/tini: entrypoint; curl: healthchecks; procps-ng: gVisor process mgmt;
+# nodejs: server runtime; bash/setpriv/tini: entrypoint; curl: healthchecks; procps-ng: gVisor process mgmt;
 # remaining libs: runtime deps of the copied CPython build.
 RUN apk add --no-cache \
-      bash curl tini setpriv procps-ng \
+      nodejs bash curl tini setpriv procps-ng \
       libffi libbz2 xz-libs zlib sqlite-libs expat ncurses-libs readline gdbm libuuid libssl3 libcrypto3 \
  && ln -sf /sbin/tini /usr/bin/tini \
  && mkdir -p /persist/docs \
