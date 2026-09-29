@@ -13,9 +13,11 @@ The image is built from an unmodified upstream `grist-core` release tag by GitHu
 | Python (formula engine) | 3.11 | 3.11 (musl build) |
 | Formula sandbox | gVisor (default), Pyodide (optional) | gVisor only |
 | Built web assets | Copied twice (duplicate layer) | Copied once |
-| Python stdlib extras (tests, tkinter, idle, pip) | Included | Removed |
+| Locale data (ICU) | Full | Full (`icu-data-full`) |
+| Python stdlib extras (tests, tkinter, idle, pip, setuptools, self-test modules) | Included | Removed |
 | Browser-only npm packages in runtime `node_modules` | Included | Removed (already bundled into `static/`) |
-| Source maps and TypeScript declaration files | Included | Removed |
+| Browser, UMD, minified and ES-module copies inside server packages | Included | Removed (reviewed list, re-checked at build time) |
+| Tests, docs, examples, C sources, source maps and type declarations inside packages | Included | Removed |
 
 It uses the same Grist community edition code, the same environment variables and the same `/persist` data layout as upstream. Existing volumes work unchanged, and the container user is still `grist` (uid/gid 1001).
 
@@ -42,22 +44,38 @@ Grist documents are SQLite files. Keep `/persist` on local disk. Network filesys
 ## Tags
 
 - `latest`: the most recent upstream release
-- `<version>` (e.g. `1.7.19`): a specific `grist-core` release
+- `<version>` (e.g. `1.7.20`): a specific `grist-core` release
 
 A scheduled workflow checks daily for new upstream releases and rebuilds weekly to pick up Alpine security updates.
 
 ## Building locally
 
 ```bash
-git clone --depth 1 --branch v1.7.19 https://github.com/gristlabs/grist-core.git src
+git clone --depth 1 --branch v1.7.20 https://github.com/gristlabs/grist-core.git src
 docker build -t grist-alpine:local .
 ./tests/smoke.sh grist-alpine:local
+python3 tests/functional.py grist-alpine:local   # DOCKER=podman for Podman
 ```
 
 The build context is this repository, with the upstream source in `./src`.
-`tools/find-client-only-deps.js` runs during the build and removes only npm
-packages that nothing outside `app/client` references (directly, dynamically by
-name, or through another kept package). It prints what it removed.
+
+`tools/find-client-only-deps.js` runs during the build. It removes npm packages
+that nothing server-side references (directly, dynamically by name, or through
+another kept package) and keeps only the served files of packages that browsers
+load through `static/` links. It also removes the reviewed bundle copies in its
+`TRIM` table. Each entry is re-checked on every build, and the build fails if
+anything still points at a removed path. Every trimmed package must still load
+afterwards. The Python stage fails the same way if the formula engine imports a
+removed module.
+
+`tests/functional.py` starts the image with the gVisor sandbox and checks:
+
+- documents, formulas, records, imports and exports, and attachments
+- API keys, document history, and locale formatting
+- that every script and stylesheet on the main pages loads
+- persistence across a restart
+
+CI runs it before publishing.
 
 ## License
 

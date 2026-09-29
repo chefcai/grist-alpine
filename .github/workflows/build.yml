@@ -151,6 +151,12 @@ jobs:
         if: steps.check.outputs.needs_build == 'true'
         run: ./tests/smoke.sh grist-alpine:smoke
 
+      # Documents, formulas, imports/exports, attachments, API keys, served
+      # assets, locale data, restart persistence and the gVisor sandbox.
+      - name: Functional test image
+        if: steps.check.outputs.needs_build == 'true'
+        run: python3 tests/functional.py grist-alpine:smoke
+
       - name: Push image
         if: steps.check.outputs.needs_build == 'true' && github.event_name != 'pull_request'
         uses: docker/build-push-action@v7
